@@ -1,7 +1,9 @@
 import pandas as pd
 import joblib
+import io
 from pydantic import BaseModel,Field
-from fastapi import FastAPI,HTTPException
+from fastapi import FastAPI,HTTPException,UploadFile,File
+from fastapi.responses import StreamingResponse
 
 
 app=FastAPI()
@@ -60,6 +62,62 @@ def predict(house:Housefeatures):
             "predicted_price_short":f"${predicted:,.2f} hundred thousand",
             "findence_range":f"$ {price_usd-39000:,.0f} to ${price_usd+39000 :,.0f}"
         }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"prediction failed : {str(e)}"
+        )
+
+@app.post("/predict-file")
+async def predict_file(file:UploadFile=File(...)):
+    
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(
+            status_code=400,
+            detail="please upload a csv file"
+        )
+    
+    contents=await file.read()
+    
+    df=pd.read_csv(io.BytesIO(contents))
+    
+    required_column=[
+        "MedInc","HouseAge","AveRooms","AveBedrms","Population","AveOccup","Latitude","Longitude"
+    ]
+    
+    missing_columns=[
+        col for col in required_column
+        if col not in df.columns
+    ]
+    
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing column your provide : {missing_columns}"
+        )
+    if len(df)==0:
+        raise HTTPException(
+            status_code=400,
+            detail="the upload file is empty"
+        )
+    
+    try:
+        prediction=model.predict(df[required_column])
+        df["predicted_price_usd"] = prediction * 100000
+        df["predicted_price_usd"]=df["predicted_price_usd"].apply(lambda x: f"${x:,.0f}")
+        
+        output=io.StringIO()
+        df.to_csv(output, index=False)
+        output.seek(0)
+ 
+        return StreamingResponse(
+            output,
+            media_type="text/csv",
+            headers={
+                "contents-disposition":"attachment",
+                "filename":"prediction.csv"
+            }
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
